@@ -46,6 +46,8 @@
 #include "dg/llvm/analysis/PointsTo/PointerAnalysis.h"
 #include "dg/llvm/analysis/ReachingDefinitions/ReachingDefinitions.h"
 
+#include "dg/llvm/analysis/LLVMMemSSA/DefUse.h"
+
 #include "TimeMeasure.h"
 
 using namespace dg;
@@ -373,6 +375,8 @@ int main(int argc, char *argv[])
 
     tm.stop();
     tm.report("INFO: Points-to analysis took");
+
+    LLVMMemorySSAAnalysis MemSSA(*M);
 
     LLVMReachingDefinitionsAnalysisOptions opts;
     opts.entryFunction = entryFunc;
