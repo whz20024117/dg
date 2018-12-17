@@ -11,6 +11,8 @@
 #include <llvm/Analysis/BasicAliasAnalysis.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Transforms/Scalar/LoopPassManager.h>
+#include <llvm/Transforms/IPO/ForceFunctionAttrs.h>
+#include <llvm/Transforms/IPO/InferFunctionAttrs.h>
 
 #include <llvm/IR/LegacyPassManager.h>
 
@@ -39,21 +41,12 @@ public:
 		PB.registerLoopAnalyses(LAM);
 		PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
-/*
-		auto Err = PB.parsePassPipeline(MPM, "memoryssa",
-										false, false);
-		if (Err) {
-			// Only fail with assert above, otherwise ignore the parsing error.
-			errs() << "ERROR: " << toString(std::move(Err)) << "\n";
-			assert(0);
-			//consumeError(std::move(Err));
-			return;
-		}
-*/
-		// Run passes
-		//MPM.run(M, MAM);
+		// to get more precise inter-procedural dependencies
+   		MPM.addPass(ForceFunctionAttrsPass());
+  		MPM.addPass(InferFunctionAttrsPass());
+		MPM.run(M, MAM);
 
-        llvm::MemorySSAAnalysis MSSA;
+        MemorySSAAnalysis MSSA;
         for (auto& F: M) {
 			if (F.isDeclaration())
 				continue;
