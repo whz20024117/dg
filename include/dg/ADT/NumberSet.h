@@ -53,7 +53,7 @@ class SmallNumberSet {
         BigSetT big;
 
         SetT() : small() {}
-        ~SetT() {}
+        ~SetT() {};
     } _set;
 
     void _lift(NumT n) {
@@ -82,10 +82,9 @@ class SmallNumberSet {
         if (is_small) {
             if (_set.small.mayContain(n))
                 return !_set.small.set(n);
-            else {
-                _lift(n);
-                return true;
-            }
+            _lift(n);
+            return true;
+
         } else
             return _set.big.add(n);
     }
@@ -108,8 +107,8 @@ class SmallNumberSet {
         union ItT {
             SmallSetT::const_iterator small_it;
             BigSetT::const_iterator big_it;
-            ItT() {}
-            ~ItT() {}
+            ItT() {};
+            ~ItT() {};
         } _it;
 
       public:
@@ -148,8 +147,7 @@ class SmallNumberSet {
         size_t operator*() const {
             if (is_small)
                 return *_it.small_it;
-            else
-                return *_it.big_it;
+            return *_it.big_it;
         }
 
         bool operator==(const const_iterator &rhs) const {
@@ -158,8 +156,7 @@ class SmallNumberSet {
 
             if (is_small)
                 return _it.small_it == rhs._it.small_it;
-            else
-                return _it.big_it == rhs._it.big_it;
+            return _it.big_it == rhs._it.big_it;
         }
 
         bool operator!=(const const_iterator &rhs) const {

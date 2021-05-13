@@ -47,7 +47,7 @@ static void dropAllUses(Val *V) {
 
 class LLVMSlicer : public Slicer<LLVMNode> {
   public:
-    LLVMSlicer() {}
+    LLVMSlicer() = default;
 
     void keepFunctionUntouched(const char *n) { dont_touch.insert(n); }
 
@@ -79,7 +79,7 @@ class LLVMSlicer : public Slicer<LLVMNode> {
             return true;
 
         llvm::BasicBlock *blk = llvm::cast<llvm::BasicBlock>(val);
-        for (auto &succ : block->successors()) {
+        for (const auto &succ : block->successors()) {
             if (succ.label == 255)
                 continue;
 
@@ -109,7 +109,7 @@ class LLVMSlicer : public Slicer<LLVMNode> {
     }
 
     // override slice method
-    uint32_t slice(LLVMNode *start, uint32_t sl_id = 0) {
+    static uint32_t slice(LLVMNode *start, uint32_t sl_id = 0) {
         (void) sl_id;
         (void) start;
 
@@ -273,7 +273,8 @@ void sliceCallNode(LLVMNode *callNode, uint32_t slice_id)
     // when we sliced away a branch of CFG, we need to reconnect it
     // to exit block, since on this path we would silently terminate
     // (this path won't have any effect on the property anymore)
-    void adjustBBlocksSucessors(LLVMDependenceGraph *graph, uint32_t slice_id) {
+    static void adjustBBlocksSucessors(LLVMDependenceGraph *graph,
+                                       uint32_t slice_id) {
         LLVMBBlock *oldExitBB = graph->getExitBB();
         assert(oldExitBB && "Don't have exit BB");
 
@@ -282,7 +283,7 @@ void sliceCallNode(LLVMNode *callNode, uint32_t slice_id)
         for (auto &it : graph->getBlocks()) {
             const llvm::BasicBlock *llvmBB =
                     llvm::cast<llvm::BasicBlock>(it.first);
-            const auto tinst = llvmBB->getTerminator();
+            const auto *const tinst = llvmBB->getTerminator();
             LLVMBBlock *BB = it.second;
 
             // nothing to do
@@ -355,7 +356,7 @@ void sliceCallNode(LLVMNode *callNode, uint32_t slice_id)
 
             // replace missing labels. Label should be from 0 to some max,
             // no gaps, so jump to safe exit under missing labels
-            for (uint8_t i = 0; i < tinst->getNumSuccessors(); ++i) {
+            for (unsigned i = 0; i < tinst->getNumSuccessors(); ++i) {
                 if (!labels.contains(i)) {
                     if (!newExitBB)
                         newExitBB = addNewExitBB(graph);
@@ -475,10 +476,10 @@ void sliceCallNode(LLVMNode *callNode, uint32_t slice_id)
         return false;
     }
 
-    void reconnectBBlock(LLVMBBlock *BB, llvm::BasicBlock *llvmBB) {
+    static void reconnectBBlock(LLVMBBlock *BB, llvm::BasicBlock *llvmBB) {
         using namespace llvm;
 
-        auto tinst = llvmBB->getTerminator();
+        auto *tinst = llvmBB->getTerminator();
         assert((!tinst || BB->successorsNum() <= 2 ||
                 llvm::isa<llvm::SwitchInst>(tinst)) &&
                "BB has more than two successors (and it's not a switch)");
@@ -550,7 +551,7 @@ void sliceCallNode(LLVMNode *callNode, uint32_t slice_id)
         // if the block still does not have terminator
     }
 
-    void reconnectLLLVMBasicBlocks(LLVMDependenceGraph *graph) {
+    static void reconnectLLLVMBasicBlocks(LLVMDependenceGraph *graph) {
         for (auto &it : graph->getBlocks()) {
             llvm::BasicBlock *llvmBB = llvm::cast<llvm::BasicBlock>(it.first);
             LLVMBBlock *BB = it.second;
@@ -559,7 +560,7 @@ void sliceCallNode(LLVMNode *callNode, uint32_t slice_id)
         }
     }
 
-    void ensureEntryBlock(LLVMDependenceGraph *graph) {
+    static void ensureEntryBlock(LLVMDependenceGraph *graph) {
         using namespace llvm;
 
         Value *val = graph->getEntry()->getKey();

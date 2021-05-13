@@ -116,14 +116,14 @@ static void maybe_print_statistics(llvm::Module *M,
     uint64_t inum, bnum, fnum, gnum;
     inum = bnum = fnum = gnum = 0;
 
-    for (auto I = M->begin(), E = M->end(); I != E; ++I) {
+    for (auto &I : *M) {
         // don't count in declarations
-        if (I->size() == 0)
+        if (I.empty())
             continue;
 
         ++fnum;
 
-        for (const BasicBlock &B : *I) {
+        for (const BasicBlock &B : I) {
             ++bnum;
             inum += B.size();
         }
@@ -199,8 +199,9 @@ int main(int argc, char *argv[]) {
     setupStackTraceOnError(argc, argv);
 
 #if ((LLVM_VERSION_MAJOR >= 6))
-    llvm::cl::SetVersionPrinter(
-            [](llvm::raw_ostream &) { printf("%s\n", GIT_VERSION); });
+    llvm::cl::SetVersionPrinter([](llvm::raw_ostream & /*unused*/) {
+        printf("%s\n", GIT_VERSION);
+    });
 #else
     llvm::cl::SetVersionPrinter([]() { printf("%s\n", GIT_VERSION); });
 #endif

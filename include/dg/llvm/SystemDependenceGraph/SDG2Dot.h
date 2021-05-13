@@ -1,6 +1,11 @@
 #ifndef DG_LLVM_SDG2DOT_H_
 #define DG_LLVM_SDG2DOT_H_
 
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+
 #include <dg/util/SilenceLLVMWarnings.h>
 SILENCE_LLVM_WARNINGS_PUSH
 #include "llvm/IR/Instructions.h"
@@ -11,10 +16,6 @@ SILENCE_LLVM_WARNINGS_PUSH
 #include "llvm/IR/DebugInfo.h" //DIScope
 #endif
 SILENCE_LLVM_WARNINGS_POP
-
-#include <iostream>
-#include <sstream>
-#include <string>
 
 #include "dg/SystemDependenceGraph/DGNodeCall.h"
 #include "dg/llvm/SystemDependenceGraph/SystemDependenceGraph.h"
@@ -36,8 +37,7 @@ static std::ostream& operator<<(std::ostream& os, const analysis::Offset& off)
 */
 
 namespace {
-static inline std::ostream &printLLVMVal(std::ostream &os,
-                                         const llvm::Value *val) {
+inline std::ostream &printLLVMVal(std::ostream &os, const llvm::Value *val) {
     if (!val) {
         os << "(null)";
         return os;
@@ -48,11 +48,11 @@ static inline std::ostream &printLLVMVal(std::ostream &os,
 
     if (llvm::isa<llvm::Function>(val)) {
         ro << "FUN " << val->getName();
-    } else if (auto B = llvm::dyn_cast<llvm::BasicBlock>(val)) {
+    } else if (const auto *B = llvm::dyn_cast<llvm::BasicBlock>(val)) {
         ro << B->getParent()->getName() << "::";
         ro << "label " << val->getName();
-    } else if (auto I = llvm::dyn_cast<llvm::Instruction>(val)) {
-        const auto B = I->getParent();
+    } else if (const auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
+        const auto *const B = I->getParent();
         if (B) {
             ro << B->getParent()->getName() << "::";
         } else {
