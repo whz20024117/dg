@@ -1,6 +1,7 @@
 #ifndef DG_MAP_IMPL_H_
 #define DG_MAP_IMPL_H_
 
+#include <cstddef> // size_t
 #include <map>
 
 namespace dg {
@@ -31,7 +32,7 @@ class MapImpl : public Impl {
         return nullptr;
     }
 
-    void reserve(size_t /*unused*/) {
+    void reserve(std::size_t /*unused*/) {
         // so that we can exchangabily use with HashMap
     }
 };
