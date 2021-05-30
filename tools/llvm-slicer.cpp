@@ -116,6 +116,13 @@ llvm::cl::opt<bool> cutoff_diverging(
                 " (default=true)."),
         llvm::cl::init(true), llvm::cl::cat(SlicingOpts));
 
+llvm::cl::opt<bool> fast_slicer(
+        "fast-slicer",
+        llvm::cl::desc(
+                "Use fast but imprecise slicing before the regular slicing."
+                " (default=true)."),
+        llvm::cl::init(true), llvm::cl::cat(SlicingOpts));
+
 static void maybe_print_statistics(llvm::Module *M,
                                    const char *prefix = nullptr) {
     if (!statistics)
@@ -256,9 +263,10 @@ int main(int argc, char *argv[]) {
     // slice the code
     /// ---------------
 
-    if (cutoff_diverging) {
+    std::vector<const llvm::Value *> csvalues;
+    if (cutoff_diverging || fast_slicer) {
         DBG(llvm - slicer, "Searching for slicing criteria values");
-        auto csvalues =
+        csvalues =
                 getSlicingCriteriaValues(*M.get(), options.slicingCriteria,
                                          options.legacySlicingCriteria,
                                          options.legacySecondarySlicingCriteria,
@@ -276,6 +284,10 @@ int main(int argc, char *argv[]) {
             maybe_print_statistics(M.get(), "Statistics after ");
             return writer.cleanAndSaveModule(should_verify_module);
         }
+    }
+
+    if (cutoff_diverging) {
+        assert(!csvalues.empty() && "Have no slicing criteria");
 
         DBG(llvm - slicer, "Cutting off diverging branches");
         if (!llvmdg::cutoffDivergingBranches(
@@ -287,6 +299,21 @@ int main(int argc, char *argv[]) {
         maybe_print_statistics(M.get(), "Statistics after cutoff-diverging ");
     }
 
+    if (fast_slicer) {
+        assert(!csvalues.empty() && "Have no slicing criteria");
+
+        DBG(llvm - slicer, "Running fast slicing");
+        ::FastSlicer slicer(M.get(), options);
+        if (!slicer.slice(csvalues)) {
+            errs() << "[llvm-slicer]: Fast slicing failed\n";
+            return 1;
+        }
+
+        maybe_print_statistics(M.get(), "Statistics after fast slicing ");
+    }
+
+    ///
+    // The regular slicer
     ::Slicer slicer(M.get(), options);
     if (!slicer.buildDG()) {
         errs() << "ERROR: Failed building DG\n";

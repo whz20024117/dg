@@ -235,6 +235,35 @@ class Slicer {
     }
 };
 
+///
+// Fast but imprecise slicer based on the Weiser's algorithm
+// (well, it is fast and imprecise with the default analyses,
+// but can be made slow and very precise...)
+class FastSlicer {
+    llvm::Module *M;
+    const SlicerOptions &_options;
+    dg::llvmdg::LLVMFastSlicer slicer;
+
+  public:
+    FastSlicer(llvm::Module *mod, const SlicerOptions &opts)
+            : M(mod), _options(opts), slicer(*mod) {
+        assert(M && "Need module");
+    }
+
+    const SlicerOptions &getOptions() const { return _options; }
+
+    bool slice(const std::vector<const llvm::Value *> &criteria) {
+        dg::debug::TimeMeasure tm;
+
+        tm.start();
+        slicer.slice(criteria);
+
+        tm.stop();
+        tm.report("[llvm-slicer] Fast slicing of the module took");
+        return true;
+    }
+};
+
 class ModuleWriter {
     const SlicerOptions &options;
     llvm::Module *M;

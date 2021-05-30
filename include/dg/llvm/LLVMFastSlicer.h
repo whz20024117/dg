@@ -14,6 +14,7 @@ SILENCE_LLVM_WARNINGS_PUSH
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Instruction.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Value.h>
 #include <llvm/Support/raw_ostream.h>
 SILENCE_LLVM_WARNINGS_POP
@@ -27,10 +28,14 @@ namespace dg {
 namespace llvmdg {
 
 class LLVMFastSlicer {
-
+    llvm::Module &module;
   public:
+
+    LLVMFastSlicer(llvm::Module &m) : module(m) {}
+
     void keepFunctionUntouched(const char *n) {
         llvm::errs() << "Keep untouched not working " << n << "\n";
+        dont_touch.insert(n);
     }
 
     void removeValue(llvm::Value *val) {
@@ -73,9 +78,30 @@ class LLVMFastSlicer {
         // finally, erase the block per se
         blk->eraseFromParent();
     }
-    uint32_t slice(const std::set<llvm::Value *> &start) {}
+
+    void slice(const std::vector<const llvm::Value *> &criteria) {
+        auto slice = computeSlice(criteria);
+        for (auto &F : module) {
+            for (auto &I : instructions(F)) {
+                if (slice.count(&I) == 0) {
+                    removeValue(&I);
+                }
+            }
+        }
+
+        // FIXME: remove empty blocks
+
+        for (auto &G : module.globals()) {
+            if (slice.count(&G) == 0) {
+                removeValue(&G);
+            }
+        }
+    }
 
   private:
+    std::set<llvm::Value *>
+    computeSlice(const std::vector<const llvm::Value *> &criteria);
+
     static void adjustPhiNodes(llvm::BasicBlock *pred, llvm::BasicBlock *blk) {
         using namespace llvm;
 
@@ -120,6 +146,7 @@ class LLVMFastSlicer {
         }
     }
 
+    /*
     static LLVMBBlock *createNewExitBB(LLVMDependenceGraph *graph) {
         using namespace llvm;
 
@@ -170,7 +197,6 @@ class LLVMFastSlicer {
         return newExitBB;
     }
 
-    /*
     bool dontTouch(const llvm::StringRef &r) {
         for (const char *n : dont_touch)
             if (r.equals(n))
