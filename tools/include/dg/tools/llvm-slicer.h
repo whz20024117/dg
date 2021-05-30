@@ -20,6 +20,7 @@ SILENCE_LLVM_WARNINGS_POP
 #include "dg/llvm/LLVMDependenceGraph.h"
 #include "dg/llvm/LLVMDependenceGraphBuilder.h"
 #include "dg/llvm/LLVMSlicer.h"
+#include "dg/llvm/LLVMFastSlicer.h"
 
 #include "dg/llvm/LLVMDG2Dot.h"
 #include "dg/llvm/LLVMDGAssemblyAnnotationWriter.h"
