@@ -81,26 +81,14 @@ class LLVMFastSlicer {
 
     void slice(const std::vector<const llvm::Value *> &criteria) {
         auto slice = computeSlice(criteria);
-        for (auto &F : module) {
-            for (auto &I : instructions(F)) {
-                if (slice.count(&I) == 0) {
-                    removeValue(&I);
-                }
-            }
-        }
-
-        // FIXME: remove empty blocks
-
-        for (auto &G : module.globals()) {
-            if (slice.count(&G) == 0) {
-                removeValue(&G);
-            }
-        }
+        sliceModule(slice);
     }
 
   private:
     std::set<llvm::Value *>
     computeSlice(const std::vector<const llvm::Value *> &criteria);
+
+    void sliceModule(const std::set<llvm::Value *> &slice);
 
     static void adjustPhiNodes(llvm::BasicBlock *pred, llvm::BasicBlock *blk) {
         using namespace llvm;
