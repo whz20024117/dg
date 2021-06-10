@@ -19,6 +19,7 @@ struct Data {
 };
 
 class SlicerWorker {
+    /*
     std::set<llvm::Value *> slice;
     ADT::HashMap<llvm::Instruction *, Data> data;
     ADT::QueueFIFO<llvm::Instruction *> queue;
@@ -43,10 +44,13 @@ class SlicerWorker {
         }
         return changed;
     }
+    */
 };
 
 std::set<llvm::Value *>
 LLVMFastSlicer::computeSlice(const std::vector<const llvm::Value *> &criteria) {
+    std::set<llvm::Value *> slice;
+    /*
     SlicerWorker slicer;
     for (auto *c : criteria) {
         slicer.addTopLevelValuesToSlice(c);
@@ -57,6 +61,7 @@ LLVMFastSlicer::computeSlice(const std::vector<const llvm::Value *> &criteria) {
         auto *I = queue.pop();
     }
 
+    */
     return slice;
 }
 
