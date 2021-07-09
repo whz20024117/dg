@@ -281,7 +281,7 @@ class BBlockWalk : public BBlockWalkBase<NodeT> {
             ++this->statistics.processedBlocks;
 
             // should and can we go into subgraph?
-            if ((flags & BBLOCK_WALK_INTERPROCEDURAL)) {
+            if ((flags & BBLOCK_WALK_INTERPROCEDURAL) && interprocedureCallDepth[BB] < 1) {
                 if ((flags & BBLOCK_NO_CALLSITES) &&
                     BB->getCallSitesNum() == 0) {
                     // get callsites if bblocks does not keep them
@@ -292,33 +292,34 @@ class BBlockWalk : public BBlockWalkBase<NodeT> {
                 }
 
                 if (BB->getCallSitesNum() != 0)
-                    queueSubgraphsBBs(BB);
+                    queueSubgraphsBBs(BB, interprocedureCallDepth[BB] + 1);
             }
 
             // queue post-dominated blocks if we should
             if (flags & BBLOCK_WALK_POSTDOM)
                 for (BBlockPtrT S : BB->getPostDominators())
-                    enqueue(S);
+                    enqueue(S, interprocedureCallDepth[BB]);
 
             // queue dominated blocks
             if (flags & BBLOCK_WALK_DOM)
                 for (BBlockPtrT S : BB->getDominators())
-                    enqueue(S);
+                    enqueue(S, interprocedureCallDepth[BB]);
 
             // queue sucessors of this BB
             if (flags & BBLOCK_WALK_CFG)
                 for (auto &E : BB->successors())
-                    enqueue(E.target);
+                    enqueue(E.target, interprocedureCallDepth[BB]);
         }
     }
 
     uint32_t getFlags() const { return flags; }
 
-    void enqueue(BBlockPtrT BB) {
+    void enqueue(BBlockPtrT BB, uint8_t depth = 0) {
         AnalysesAuxiliaryData &sad = this->getAnalysisData(BB);
         if (sad.lastwalkid != runid) {
             sad.lastwalkid = runid;
             queue.push(BB);
+            interprocedureCallDepth[BB] = depth;
         }
     }
 
@@ -326,7 +327,7 @@ class BBlockWalk : public BBlockWalkBase<NodeT> {
     virtual void prepare(BBlockPtrT BB) { (void) BB; }
 
   private:
-    void queueSubgraphsBBs(BBlockPtrT BB) {
+    void queueSubgraphsBBs(BBlockPtrT BB, uint8_t depth) {
         DGParameters<NodeT> *params;
 
         // iterate over call-site nodes
@@ -335,8 +336,8 @@ class BBlockWalk : public BBlockWalkBase<NodeT> {
             if ((flags & BBLOCK_WALK_PARAMS)) {
                 params = cs->getParameters();
                 if (params) {
-                    enqueue(params->getBBIn());
-                    enqueue(params->getBBOut());
+                    enqueue(params->getBBIn(), depth);
+                    enqueue(params->getBBOut(), depth);
                 }
             }
 
@@ -350,15 +351,15 @@ class BBlockWalk : public BBlockWalkBase<NodeT> {
 
                     params = entry->getParameters();
                     if (params) {
-                        enqueue(params->getBBIn());
-                        enqueue(params->getBBOut());
+                        enqueue(params->getBBIn(), depth);
+                        enqueue(params->getBBOut(), depth);
                     }
                 }
 
                 // queue entry BBlock
                 BBlockPtrT entryBB = subdg->getEntryBB();
                 assert(entryBB && "No entry block in sub dg");
-                enqueue(entryBB);
+                enqueue(entryBB, depth);
             }
         }
     }
@@ -366,6 +367,7 @@ class BBlockWalk : public BBlockWalkBase<NodeT> {
     QueueT queue;
     uint32_t flags;
     unsigned int runid;
+    std::map<BBlockPtrT ,uint8_t> interprocedureCallDepth;
 };
 
 #endif
