@@ -61,6 +61,16 @@ if (LLVM_DG)
 					    PRIVATE ${llvm_irreader}
 					    PRIVATE ${llvm_core}
 					    )
+	
+	add_executable(llvm-source-dump llvm-source-dump.cpp)
+	target_link_libraries(llvm-source-dump PRIVATE dgllvmslicer
+						PRIVATE dgllvmpta
+						PRIVATE ${llvm_support}
+						PRIVATE ${llvm_analysis}
+						PRIVATE ${llvm_irreader}
+						PRIVATE ${llvm_core}
+						)
+
 if (HAVE_SVF)
 	target_link_libraries(llvm-cg-dump
                                            PRIVATE ${SVF_LIBS}
