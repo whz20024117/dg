@@ -281,7 +281,7 @@ class BBlockWalk : public BBlockWalkBase<NodeT> {
             ++this->statistics.processedBlocks;
 
             // should and can we go into subgraph?
-            if ((flags & BBLOCK_WALK_INTERPROCEDURAL) && interprocedureCallDepth[BB] < 1) {
+            if ((flags & BBLOCK_WALK_INTERPROCEDURAL) && interprocedureCallDepth[BB] < 1) { //HW: add call depth
                 if ((flags & BBLOCK_NO_CALLSITES) &&
                     BB->getCallSitesNum() == 0) {
                     // get callsites if bblocks does not keep them
