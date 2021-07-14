@@ -50,6 +50,7 @@ static void get_lines_from_module(const Module *M) {
                     // llvm::DIScope *Scope = cast<llvm::DIScope>(Loc.getScope());
                     // std::string fileName = Scope->getFilename();
                     std::string fileName = F.getSubprogram()->getFile()->getFilename();
+                    line_dict[fileName].insert(F.getSubprogram()->getLine());
                     line_dict[fileName].insert(Loc.getLine());
                 }
             }
@@ -185,7 +186,7 @@ int main(int argc, char *argv[]) {
     // Print lines
 
     for (auto &fit : line_dict){
-        std::cout<<fit.first<<std::endl;
+        std::cout<< "FILE: " <<fit.first<<std::endl;
         std::ifstream ifs(fit.first.c_str());
         if (!ifs.is_open() || ifs.bad()) {
             errs() << "Failed opening given source file: " << fit.first << "\n";
