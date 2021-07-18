@@ -97,14 +97,21 @@ static bool get_nesting_structure(const char *source) {
             ++cur_line;
 
         /* Check special cases and Update flags */
-        if ((src_flag & CPP_COMMENT) && ch == '\n'){ // end of cpp comments
-            src_flag &= ~CPP_COMMENT;
+        if ((src_flag & CPP_COMMENT)){
+            if (ch != '\n'){ // end of cpp comments
+                continue;
+            } else {
+                src_flag &= ~CPP_COMMENT;
+            }
         }
 
-        if ((src_flag & C_COMMENT) && ch == '*' && ifs.peek() == '/'){ // end of c comments
-            src_flag &= ~C_COMMENT;
-            ifs.get();
-            continue;
+        if ((src_flag & C_COMMENT)){
+            if (ch == '*' && ifs.peek() == '/') { // end of c comments
+                src_flag &= ~C_COMMENT;
+                ifs.get();
+            } else {
+                continue;
+            }
         }
 
         if (!(src_flag & (CPP_COMMENT | C_COMMENT)) && ch == '/'){ // Beginning of comments
@@ -120,9 +127,6 @@ static bool get_nesting_structure(const char *source) {
             }
         }
 
-        if (src_flag & (CPP_COMMENT | C_COMMENT))
-            continue;
-
         if (ch == '\\' && src_flag & (IN_CHAR | IN_STRING)) { // escapes in char and string
             ifs.get();
             continue;
@@ -130,12 +134,10 @@ static bool get_nesting_structure(const char *source) {
 
         if (ch == '\'' && !(src_flag & IN_STRING)) {
             src_flag ^= IN_CHAR;
-            continue; 
         }
 
         if (ch == '"' && !(src_flag & IN_CHAR)) {
             src_flag ^= IN_STRING;
-            continue; 
         }
 
         if (src_flag & (IN_CHAR | IN_STRING))
@@ -143,7 +145,7 @@ static bool get_nesting_structure(const char *source) {
 
         switch (ch) {
         case '\n':
-            ++cur_line;
+            //++cur_line;
             if (!nesting.empty())
                 nesting_structure.emplace(cur_line, nesting.top());
             break;
@@ -231,7 +233,7 @@ int main(int argc, char *argv[]) {
         /* really not efficient, but easy */
         auto &nesting_structure = nesting_structure_per_file[fit.first];
         auto &matching_braces = matching_braces_per_file[fit.first];
-        
+
         size_t old_size;
         do {
             old_size = fit.second.size();
