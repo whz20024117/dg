@@ -528,11 +528,11 @@ int main(int argc, char *argv[]) {
     // Print lines
 
     for (auto &fit : line_dict){
-        std::cout<< "FILE: " <<fit.first<<std::endl;
+        // std::cout<< "FILE: " <<fit.first<<std::endl;
         std::ifstream ifs(fit.first.c_str());
         if (!ifs.is_open() || ifs.bad()) {
             errs() << "Failed opening given source file: " << fit.first << "\n";
-            continue;
+            return -1;
         }
 
         print_lines(ifs, fit.second);
