@@ -32,9 +32,10 @@ SILENCE_LLVM_WARNINGS_POP
 using namespace llvm;
 
 // lines with matching braces
-std::vector<std::pair<unsigned, unsigned>> matching_braces;
+typedef std::vector<std::pair<unsigned, unsigned>> MatchingBracesVector;
+std::map<std::string, MatchingBracesVector> matching_braces_per_file;
 // mapping line->index in matching_braces
-std::map<unsigned, unsigned> nesting_structure;
+std::map<std::string, std::map<unsigned, unsigned>> nesting_structure_per_file;
 // line per file
 std::map<std::string, std::set<unsigned>> line_dict;
 
@@ -74,11 +75,72 @@ static bool get_nesting_structure(const char *source) {
         //abort();
     }
 
+    std::map<unsigned, unsigned> nesting_structure;
+    MatchingBracesVector matching_braces;
+
     char ch;
     unsigned cur_line = 1;
     unsigned idx;
     std::stack<unsigned> nesting;
+
+    uint8_t src_flag = 0;
+    enum SRCSTATE{
+        C_COMMENT = 1 << 0,
+        CPP_COMMENT = 1 << 1,
+        IN_CHAR = 1 << 2,
+        IN_STRING= 1 << 3
+    };
+
     while (ifs.get(ch)) {
+
+        if (ch == '\n')
+            ++cur_line;
+
+        /* Check special cases and Update flags */
+        if ((src_flag & CPP_COMMENT) && ch == '\n'){ // end of cpp comments
+            src_flag &= ~CPP_COMMENT;
+        }
+
+        if ((src_flag & C_COMMENT) && ch == '*' && ifs.peek() == '/'){ // end of c comments
+            src_flag &= ~C_COMMENT;
+            ifs.get();
+            continue;
+        }
+
+        if (!(src_flag & (CPP_COMMENT | C_COMMENT)) && ch == '/'){ // Beginning of comments
+            if (ifs.peek() == '/'){
+                src_flag |= CPP_COMMENT;
+                ifs.get();
+                continue;
+            }
+            else if (ifs.peek() == '*'){
+                src_flag |= C_COMMENT;
+                ifs.get();
+                continue;
+            }
+        }
+
+        if (src_flag & (CPP_COMMENT | C_COMMENT))
+            continue;
+
+        if (ch == '\\' && src_flag & (IN_CHAR | IN_STRING)) { // escapes in char and string
+            ifs.get();
+            continue;
+        }
+
+        if (ch == '\'' && !(src_flag & IN_STRING)) {
+            src_flag ^= IN_CHAR;
+            continue; 
+        }
+
+        if (ch == '"' && !(src_flag & IN_CHAR)) {
+            src_flag ^= IN_STRING;
+            continue; 
+        }
+
+        if (src_flag & (IN_CHAR | IN_STRING))
+            continue;
+
         switch (ch) {
         case '\n':
             ++cur_line;
@@ -101,6 +163,9 @@ static bool get_nesting_structure(const char *source) {
         }
     }
 
+    nesting_structure_per_file[source] = std::move(nesting_structure);
+    matching_braces_per_file[source] = std::move(matching_braces);
+
     ifs.close();
     return true;
 }
@@ -112,7 +177,7 @@ static void print_lines(std::ifstream &ifs, std::set<unsigned> &lines) {
         ifs.getline(buf, sizeof buf);
 
         if (lines.count(cur_line) > 0) {
-            // std::cout << cur_line << ": ";
+            std::cout << cur_line << ": ";
             std::cout << buf << "\n";
         }
 
@@ -164,6 +229,9 @@ int main(int argc, char *argv[]) {
             continue;
         /* fill in the lines with braces */
         /* really not efficient, but easy */
+        auto &nesting_structure = nesting_structure_per_file[fit.first];
+        auto &matching_braces = matching_braces_per_file[fit.first];
+        
         size_t old_size;
         do {
             old_size = fit.second.size();
