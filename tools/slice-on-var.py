@@ -153,7 +153,9 @@ def main():
             raise RuntimeError('Number of labels and code slices do not match.')
     
     else:
-        cmd = ["llvm-src-slicer", "-sc", sc[0], "-entry", entry[0]]
+        cmd = ["llvm-src-slicer", "-sc", sc[0]]
+        if entry is not None:
+            cmd += ["-entry", entry[0]]
         if forward:
             cmd += ["--forward"]
         cmd += [bc_file]
