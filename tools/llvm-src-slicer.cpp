@@ -63,14 +63,13 @@ llvm::cl::opt<bool> enable_debug(
         "dbg", llvm::cl::desc("Enable debugging messages (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 
+llvm::cl::opt<bool> print_line_num(
+        "linenum", llvm::cl::desc("Print comma-seperated line number instead for Python Wrapper (default=false)."),
+        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
+
 llvm::cl::opt<bool> should_verify_module(
         "dont-verify", llvm::cl::desc("Verify sliced module (default=true)."),
         llvm::cl::init(true), llvm::cl::cat(SlicingOpts));
-
-llvm::cl::opt<bool> remove_unused_only(
-        "remove-unused-only",
-        llvm::cl::desc("Only remove unused parts of module (default=false)."),
-        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 
 llvm::cl::opt<bool> statistics(
         "statistics",
@@ -118,30 +117,6 @@ static void maybe_print_statistics(llvm::Module *M,
 
     errs() << "Globals/Functions/Blocks/Instr.: " << gnum << " " << fnum << " "
            << bnum << " " << inum << "\n";
-}
-
-static AnnotationOptsT parseAnnotationOptions(const std::string &annot) {
-    if (annot.empty())
-        return {};
-
-    AnnotationOptsT opts{};
-    std::vector<std::string> lst = splitList(annot);
-    for (const std::string &opt : lst) {
-        if (opt == "dd")
-            opts |= AnnotationOptsT::ANNOTATE_DD;
-        else if (opt == "cd" || opt == "cda")
-            opts |= AnnotationOptsT::ANNOTATE_CD;
-        else if (opt == "dda" || opt == "du")
-            opts |= AnnotationOptsT::ANNOTATE_DEF;
-        else if (opt == "pta")
-            opts |= AnnotationOptsT::ANNOTATE_PTR;
-        else if (opt == "memacc")
-            opts |= AnnotationOptsT::ANNOTATE_MEMORYACC;
-        else if (opt == "slice" || opt == "sl" || opt == "slicer")
-            opts |= AnnotationOptsT::ANNOTATE_SLICE;
-    }
-
-    return opts;
 }
 
 std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &context,
@@ -353,11 +328,6 @@ int main(int argc, char *argv[]) {
         DBG_ENABLE();
     }
 
-    // // dump_dg_only implies dumg_dg
-    // if (dump_dg_only) {
-    //     dump_dg = true;
-    // }
-
     llvm::LLVMContext context;
     std::unique_ptr<llvm::Module> M = parseModule(context, options);
     if (!M) {
@@ -371,17 +341,17 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    llvm::LLVMContext context2;
+    std::unique_ptr<llvm::Module> M2 = parseModule(context2, options);
+
+    // printf("#############################%x\n", &context);
+    // printf("#############################%x\n", &context2);
+
     maybe_print_statistics(M.get(), "Statistics before ");
 
     // remove unused from module, we don't need that
     ModuleWriter writer(options, M.get());
     writer.removeUnusedFromModule();
-
-    if (remove_unused_only) {
-        errs() << "[llvm-slicer] removed unused parts of module, exiting...\n";
-        maybe_print_statistics(M.get(), "Statistics after ");
-        return writer.saveModule(should_verify_module);
-    }
 
     /// ---------------
     // slice the code
@@ -457,16 +427,26 @@ int main(int argc, char *argv[]) {
     }
 
     // Print lines
+    if (!print_line_num){
+        for (auto &fit : line_dict){
+            // std::cout<< "FILE: " <<fit.first<<std::endl;
+            std::ifstream ifs(fit.first.c_str());
+            if (!ifs.is_open() || ifs.bad()) {
+                errs() << "Failed opening given source file: " << fit.first << "\n";
+                return -1;
+            }
 
-    for (auto &fit : line_dict){
-        // std::cout<< "FILE: " <<fit.first<<std::endl;
-        std::ifstream ifs(fit.first.c_str());
-        if (!ifs.is_open() || ifs.bad()) {
-            errs() << "Failed opening given source file: " << fit.first << "\n";
-            return -1;
+            print_lines(ifs, fit.second);
+            ifs.close();
         }
-
-        print_lines(ifs, fit.second);
-        ifs.close();
+    } else {
+        for (auto &fit : line_dict){
+            std::cout << fit.first;
+            for (auto l : fit.second) {
+                std::cout << ',' << l;
+            }
+            std::cout << std::endl;
+        }
     }
+    
 }
