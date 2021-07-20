@@ -77,23 +77,6 @@ llvm::cl::opt<bool> statistics(
         llvm::cl::desc("Print statistics about slicing (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 
-// llvm::cl::opt<bool>
-//         dump_dg("dump-dg",
-//                 llvm::cl::desc("Dump dependence graph to dot (default=false)."),
-//                 llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
-
-// llvm::cl::opt<bool> dump_dg_only(
-//         "dump-dg-only",
-//         llvm::cl::desc("Only dump dependence graph to dot,"
-//                        " do not slice the module (default=false)."),
-//         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
-
-// llvm::cl::opt<bool> dump_bb_only(
-//         "dump-bb-only",
-//         llvm::cl::desc("Only dump basic blocks of dependence graph to dot"
-//                        " (default=false)."),
-//         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
-
 llvm::cl::opt<bool> criteria_are_next_instr(
         "criteria-are-next-instr",
         llvm::cl::desc(
@@ -104,20 +87,6 @@ llvm::cl::opt<bool> criteria_are_next_instr(
                 "E.g. for 'crit' being set as the criterion, slicing critera "
                 "are all instructions that follow any call of 'crit'.\n"),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
-
-llvm::cl::opt<std::string> annotationOpts(
-        "annotate",
-        llvm::cl::desc(
-                "Save annotated version of module as a text (.ll).\n"
-                "Options:\n"
-                "  dd: data dependencies,\n"
-                "  cd:control dependencies,\n"
-                "  pta: points-to information,\n"
-                "  memacc: memory accesses of instructions,\n"
-                "  slice: comment out what is going to be sliced away).\n"
-                "for more options, use comma separated list"),
-        llvm::cl::value_desc("val1,val2,..."), llvm::cl::init(""),
-        llvm::cl::cat(SlicingOpts));
 
 static void maybe_print_statistics(llvm::Module *M,
                                    const char *prefix = nullptr) {
@@ -424,9 +393,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    ModuleAnnotator annotator(options, &slicer.getDG(),
-                              parseAnnotationOptions(annotationOpts));
-
     std::set<LLVMNode *> criteria_nodes;
     if (!getSlicingCriteriaNodes(slicer.getDG(), options.slicingCriteria,
                                  options.legacySlicingCriteria,
@@ -435,29 +401,13 @@ int main(int argc, char *argv[]) {
         llvm::errs() << "ERROR: Failed finding slicing criteria: '"
                      << options.slicingCriteria << "'\n";
 
-        if (annotator.shouldAnnotate()) {
-            slicer.computeDependencies();
-            annotator.annotate();
-        }
-
         return 1;
     }
 
     if (criteria_nodes.empty()) {
         llvm::errs() << "No reachable slicing criteria: '"
                      << options.slicingCriteria << "'\n";
-        if (annotator.shouldAnnotate()) {
-            slicer.computeDependencies();
-            annotator.annotate();
-        }
-
-        if (!slicer.createEmptyMain()) {
-            llvm::errs() << "ERROR: failed creating an empty main\n";
-            return 1;
-        }
-
-        maybe_print_statistics(M.get(), "Statistics after ");
-        return writer.cleanAndSaveModule(should_verify_module);
+        return 1;
     }
 
     // mark nodes that are going to be in the slice
@@ -466,32 +416,13 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // // print debugging llvm IR if user asked for it
-    // if (annotator.shouldAnnotate())
-    //     annotator.annotate(&criteria_nodes);
-
-    // DGDumper dumper(options, &slicer.getDG(), dump_bb_only);
-    // if (dump_dg) {
-    //     dumper.dumpToDot();
-
-    //     if (dump_dg_only)
-    //         return 0;
-    // }
-
     // slice the graph
     if (!slicer.slice()) {
         errs() << "ERROR: Slicing failed\n";
         return 1;
     }
 
-    // if (dump_dg) {
-    //     dumper.dumpToDot(".sliced.dot");
-    // }
-
-    // remove unused from module again, since slicing
-    // could and probably did make some other parts unused
     maybe_print_statistics(M.get(), "Statistics after ");
-    // return writer.cleanAndSaveModule(should_verify_module);
 
     writer.removeUnusedFromModule();
     writer.makeDeclarationsExternal();
