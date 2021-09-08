@@ -39,6 +39,9 @@ SILENCE_LLVM_WARNINGS_POP
 #include "dg/tools/llvm-slicer-opts.h"
 #include "dg/tools/llvm-slicer-utils.h"
 
+#include <llvm/IR/DebugLoc.h>
+#include <llvm/IR/DebugInfoMetadata.h>
+
 using namespace dg;
 using namespace dg::pta;
 using dg::debug::TimeMeasure;
@@ -146,6 +149,7 @@ static std::string valToStr(const llvm::Value *val) {
         if (dump_c_lines) {
             if (I) {
                 auto &DL = I->getDebugLoc();
+                ro << I->getParent()->getParent()->getSubprogram()->getFile()->getFilename() << ": ";
                 if (DL) {
                     ro << DL.getLine() << ":" << DL.getCol();
                 } else {

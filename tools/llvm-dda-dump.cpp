@@ -36,6 +36,9 @@ SILENCE_LLVM_WARNINGS_POP
 #include "dg/tools/llvm-slicer-utils.h"
 #include "dg/util/debug.h"
 
+#include <llvm/IR/DebugLoc.h>
+#include <llvm/IR/DebugInfoMetadata.h>
+
 using namespace dg;
 using namespace dg::dda;
 using llvm::errs;
@@ -67,6 +70,11 @@ llvm::cl::opt<bool> dump_c_lines(
                        "Requires metadata in the bitcode (default=false)."),
         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 
+llvm::cl::opt<bool> mygraph(
+        "mygraph",
+        llvm::cl::desc("For Src-level MyGraph"),
+        llvm::cl::init(false));
+
 using VariablesMapTy = std::map<const llvm::Value *, CVariableDecl>;
 VariablesMapTy allocasToVars(const llvm::Module &M);
 VariablesMapTy valuesToVars;
@@ -95,6 +103,7 @@ static std::string getInstName(const llvm::Value *val) {
     if (dump_c_lines) {
         if (auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
             auto &DL = I->getDebugLoc();
+            ro << I->getParent()->getParent()->getSubprogram()->getFile()->getFilename() << "@";
             if (DL) {
                 ro << DL.getLine() << ":" << DL.getCol();
             } else {
@@ -383,10 +392,12 @@ class Dumper {
     }
 
     void dump() {
-        if (dot)
+        if (mygraph)
+            dumpToMyGraph();
+        else if (dot)
             dumpToDot();
         else
-            dumpToTty();
+            dumpToTty();       
     }
 
     void dumpRWNode(RWNode *n) {
@@ -409,6 +420,32 @@ class Dumper {
                 printf("<<< bblock: %u >>>\n", bb->getID());
                 for (auto *node : bb->getNodes()) {
                     dumpRWNode(node);
+                    if (!graph_only && node->isUse() && !node->isPhi()) {
+                        for (RWNode *def : DDA->getDefinitions(node)) {
+                            printf("  <- ");
+                            printName(def);
+                            putchar('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void dumpToMyGraph() {
+        for (auto *subg : DDA->getGraph()->subgraphs()) {
+            for (auto *bb : subg->bblocks()) {
+                for (auto *node : bb->getNodes()) {
+                    if (node) {
+                        auto *val = DDA->getValue(node);
+                        if (val) {
+                            printName(node);
+                            putchar('\n');
+                        }
+                        else 
+                            continue; 
+                    }
+
                     if (!graph_only && node->isUse() && !node->isPhi()) {
                         for (RWNode *def : DDA->getDefinitions(node)) {
                             printf("  <- ");
@@ -689,6 +726,9 @@ int main(int argc, char *argv[]) {
     if (enable_debug) {
         DBG_ENABLE();
     }
+
+    if (mygraph)
+        dump_c_lines = true;
 
     llvm::LLVMContext context;
     std::unique_ptr<llvm::Module> M = parseModule(context, options);

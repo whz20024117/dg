@@ -142,6 +142,7 @@ static std::string getInstName(const llvm::Value *val) {
     if (dump_c_lines) {
         if (auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
             auto &DL = I->getDebugLoc();
+            ro << I->getParent()->getParent()->getSubprogram()->getFile()->getFilename() << ": ";
             if (DL) {
                 ro << DL.getLine() << ":" << DL.getCol();
             } else {
