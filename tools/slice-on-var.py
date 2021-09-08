@@ -46,7 +46,12 @@ parser.add_argument(
     '-p',
     action='store_true'
 )
+parser.add_argument(
+    '--dbg',
+    action='store_true'
+)
 
+debug = False
 
 def run_slicer(bc_file:str, crit:dict, entry:str, forward:bool=False, linenum=False) -> str:
     # In criteria, file, line number, variable name is mandatory. 
@@ -61,6 +66,8 @@ def run_slicer(bc_file:str, crit:dict, entry:str, forward:bool=False, linenum=Fa
     crit_cl = file + '#' + fname + '#' + line + '#&' + varname
 
     cmd = ["llvm-src-slicer", "-sc", crit_cl, "-entry", entry]
+    if not debug:
+            cmd += ["--dont-verify"]
     if forward:
         cmd += ["--forward"]
     if linenum:
@@ -102,7 +109,7 @@ def do_slice(bc_file, sc=None, forward=None, entry=None, var_file=None, linenum=
     labels: List[str] = list()
     
     if var_file is not None:
-        with open(var_file, 'r') as f:
+        with open(var_file[0], 'r') as f:
             vars = csv.reader(f)
             for var in vars:
                 # If no label
@@ -130,6 +137,8 @@ def do_slice(bc_file, sc=None, forward=None, entry=None, var_file=None, linenum=
     
     elif sc is not None:
         cmd = ["llvm-src-slicer", "-sc", sc[0]]
+        if not debug:
+            cmd += ["--dont-verify"]
         if entry is not None:
             cmd += ["-entry", entry[0]]
         if forward:
@@ -217,6 +226,9 @@ def main():
     entry:str = args.entry
     _print:bool = args.print
     bidirection:bool = args.bidirection
+    if args.dbg:
+        global debug
+        debug = True
 
     if var_file is not None and (sc is not None or entry is not None):
         warnings.warn('var_file present. -sc and -entry is ignored', RuntimeWarning)
