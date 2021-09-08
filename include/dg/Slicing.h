@@ -32,12 +32,16 @@ class WalkAndMark
                               ? (legacy::NODES_WALK_DD | // legacy::NODES_WALK_CD
                                                          // NOTE: we handle CD
                                                          // separately
-                                 legacy::NODES_WALK_USE | legacy::NODES_WALK_ID)
-                              : (legacy::NODES_WALK_REV_CD |
+                                 legacy::NODES_WALK_USE | 
+                                 legacy::NODES_WALK_ID
+                                 )
+                              : (
+                                legacy::NODES_WALK_REV_CD |
                                  legacy::NODES_WALK_REV_DD |
                                  legacy::NODES_WALK_USER |
                                  legacy::NODES_WALK_ID |
-                                 legacy::NODES_WALK_REV_ID)),
+                                 legacy::NODES_WALK_REV_ID
+                                 )), // HW: these options are critical
               forward_slice(forward_slc) {}
 
     void mark(const std::set<NodeT *> &start, uint32_t slice_id) {

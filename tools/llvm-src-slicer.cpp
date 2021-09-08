@@ -341,8 +341,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    llvm::LLVMContext context2;
-    std::unique_ptr<llvm::Module> M2 = parseModule(context2, options);
+    // llvm::LLVMContext context2;
+    // std::unique_ptr<llvm::Module> M2 = parseModule(context2, options);
 
     // printf("#############################%x\n", &context);
     // printf("#############################%x\n", &context2);
