@@ -1,93 +1,355 @@
 #include <cassert>
+#include <cinttypes>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <string>
-#include <vector>
-
-#ifndef HAVE_LLVM
-#error "This code needs LLVM enabled"
-#endif
-
-#include <llvm/Config/llvm-config.h>
-
-#if (LLVM_VERSION_MAJOR < 3)
-#error "Unsupported version of LLVM"
-#endif
-
-#include "dg/tools/llvm-slicer-opts.h"
-#include "dg/tools/llvm-slicer-utils.h"
-#include "dg/tools/llvm-slicer.h"
-#include "git-version.h"
 
 #include <dg/util/SilenceLLVMWarnings.h>
 SILENCE_LLVM_WARNINGS_PUSH
-#if LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR <= 7
-#include <llvm/IR/LLVMContext.h>
-#endif
-#include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
 #include <llvm/IRReader/IRReader.h>
-#include <llvm/Support/CommandLine.h>
-#include <llvm/Support/PrettyStackTrace.h>
-#include <llvm/Support/Signals.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/raw_os_ostream.h>
+
+#if LLVM_VERSION_MAJOR >= 4
+#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#else
+#include <llvm/Bitcode/ReaderWriter.h>
+#endif
 SILENCE_LLVM_WARNINGS_POP
 
-#include "dg/ADT/Queue.h"
+#include "dg/PointerAnalysis/Pointer.h"
+#include "dg/PointerAnalysis/PointerAnalysisFI.h"
+#include "dg/PointerAnalysis/PointerAnalysisFS.h"
+
+#include "dg/llvm/DataDependence/DataDependence.h"
+#include "dg/llvm/PointerAnalysis/PointerAnalysis.h"
+
+#include "dg/tools/TimeMeasure.h"
+#include "dg/tools/llvm-slicer-opts.h"
+#include "dg/tools/llvm-slicer-utils.h"
 #include "dg/util/debug.h"
 
-using namespace dg;
+#include <llvm/IR/DebugLoc.h>
+#include <llvm/IR/DebugInfoMetadata.h>
 
-using dg::LLVMDataDependenceAnalysisOptions;
-using dg::LLVMPointerAnalysisOptions;
+using namespace dg;
 using llvm::errs;
 
-using AnnotationOptsT =
-        dg::debug::LLVMDGAssemblyAnnotationWriter::AnnotationOptsT;
+llvm::cl::opt<std::string> my_criteria("mysc", 
+    llvm::cl::desc("My slicing criteria at source-level. Use: <filename>#<line>")
+);
 
-llvm::cl::opt<bool> enable_debug(
-        "dbg", llvm::cl::desc("Enable debugging messages (default=false)."),
-        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
+using VariablesMapTy = std::map<const llvm::Value *, CVariableDecl>;
+VariablesMapTy allocasToVars(const llvm::Module &M);
+VariablesMapTy valuesToVars;
 
-llvm::cl::opt<bool> print_line_num(
-        "linenum", llvm::cl::desc("Print comma-seperated line number instead for Python Wrapper (default=false)."),
-        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
+class MyNode;
+using MyEdgeT = std::set<MyNode *>;
+class MyNodeKey {
+public:
+    uint32_t linenum;
+    uint32_t colnum;
 
-llvm::cl::opt<bool> should_verify_module(
-        "dont-verify", llvm::cl::desc("Verify sliced module (default=true)."),
-        llvm::cl::init(true), llvm::cl::cat(SlicingOpts));
+    std::string filename;
 
-llvm::cl::opt<bool> statistics(
-        "statistics",
-        llvm::cl::desc("Print statistics about slicing (default=false)."),
-        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
+    bool operator==(const MyNodeKey& key) const {
+        return filename == key.filename && linenum == key.linenum && colnum == key.colnum;
+    }
+};
 
-llvm::cl::opt<bool> criteria_are_next_instr(
-        "criteria-are-next-instr",
-        llvm::cl::desc(
-                "Assume that slicing criteria are not the call-sites\n"
-                "of the given function, but the instructions that\n"
-                "follow the call. I.e. the call is used just to mark\n"
-                "the instruction.\n"
-                "E.g. for 'crit' being set as the criterion, slicing critera "
-                "are all instructions that follow any call of 'crit'.\n"),
-        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
+class MyNode {
+public:
+    MyEdgeT dd_edge;
+    MyEdgeT rev_dd_edge;
+    MyEdgeT cd_edge;
+    MyEdgeT rev_cd_edge;
 
+    MyNodeKey key;
 
-#ifndef USING_SANITIZERS
-void setupStackTraceOnError(int argc, char *argv[]) {
-#if LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR < 9
-    llvm::sys::PrintStackTraceOnErrorSignal();
-#else
-    llvm::sys::PrintStackTraceOnErrorSignal(llvm::StringRef());
-#endif
-    llvm::PrettyStackTraceProgram X(argc, argv);
-}
-#else
-void setupStackTraceOnError(int, char **) {}
-#endif // not USING_SANITIZERS
+    std::string fun_name;
+
+    MyNode(std::string file, uint32_t line, uint32_t col) {
+        key.filename = file;
+        key.linenum = line;
+        key.colnum = col;
+    }
+
+    int add_dd_successor(MyNode* node) {
+        if (!node)
+            return -1;
+        this->dd_edge.insert(node);
+        node->rev_dd_edge.insert(this);
+
+        return 0;
+    }
+
+    int add_cd_successor(MyNode* node) {
+        if (!node)
+            return -1;
+        this->cd_edge.insert(node);
+        node->rev_cd_edge.insert(this);
+
+        return 0;
+    }
+
+    bool has_no_edges() {
+        if (cd_edge.empty() && rev_cd_edge.empty() &&
+            dd_edge.empty() && rev_dd_edge.empty())
+            return true;
+
+        return false;
+    }
+
+    bool operator==(const MyNode& node) const {
+        return key == node.key;
+    }
+
+};
+
+class MyNodeKeyHash {
+public:
+    std::size_t operator() (const MyNodeKey &key) const {
+        std::size_t h1 = std::hash<uint32_t>()(key.colnum);
+        std::size_t h2 = std::hash<uint32_t>()(key.linenum);
+        std::size_t h3 = std::hash<std::string>()(key.filename);
+
+        return h1 ^ h2 ^ h3;
+    }
+};
+
+class MySrcPDG {
+    std::unordered_map<MyNodeKey, MyNode*, MyNodeKeyHash> nodes;
+    
+    void sliceWalkDFS(MyNode* node, 
+                        int depth, int interproc_depth,
+                        int *max_depth, int *max_interproc_depth, std::map<std::string, std::set<unsigned>> *ret, 
+                        std::set<MyNode*> *visited) {
+        
+        if (!node)
+            return;
+        
+        if (depth > *max_depth)
+            return;
+
+        if (interproc_depth > *max_interproc_depth)
+            return;
+
+        if (visited->find(node) != visited->end())
+            return;
+
+        // Add line to final slice
+        (*ret)[node->key.filename].insert(node->key.linenum);
+
+        visited->insert(node);
+        
+        // Walk along data dependency edges
+        for (auto e : node->dd_edge) {
+            if (e->fun_name == node->fun_name) {
+                sliceWalkDFS(e, depth + 1, interproc_depth, max_depth, max_interproc_depth, ret, visited);
+            } else {
+                sliceWalkDFS(e, depth + 1, interproc_depth + 1, max_depth, max_interproc_depth, ret, visited);
+            }
+        }
+
+        for (auto e : node->rev_dd_edge) {
+            if (e->fun_name == node->fun_name) {
+                sliceWalkDFS(e, depth + 1, interproc_depth, max_depth, max_interproc_depth, ret, visited);
+            } else {
+                sliceWalkDFS(e, depth + 1, interproc_depth + 1, max_depth, max_interproc_depth, ret, visited);
+            }
+        }
+
+        // Walk along control dependency edges
+        for (auto e : node->cd_edge) {
+            if (e->fun_name == node->fun_name) {
+                sliceWalkDFS(e, depth + 1, interproc_depth, max_depth, max_interproc_depth, ret, visited);
+            } else {
+                sliceWalkDFS(e, depth + 1, interproc_depth + 1, max_depth, max_interproc_depth, ret, visited);
+            }
+        }
+
+        for (auto e : node->rev_cd_edge) {
+            if (e->fun_name == node->fun_name) {
+                sliceWalkDFS(e, depth + 1, interproc_depth, max_depth, max_interproc_depth, ret, visited);
+            } else {
+                sliceWalkDFS(e, depth + 1, interproc_depth + 1, max_depth, max_interproc_depth, ret, visited);
+            }
+        }
+
+    }
+
+public:
+    // MyNode* add_node(MyNode* node) {
+    //     if (!node) {
+    //         errs() << "Null node cannot be added.\n";
+    //         return nullptr;
+    //     }
+
+    //     if (!node->has_no_edges()) {
+    //         errs() << "Warning: added nodes contain edges. These edges will be ignored.\n";
+    //     }
+
+    //     if (!is_exist(node)) {
+    //         nodes[node->key] == node;
+    //         return node;
+    //     } else {
+    //         delete node;
+    //         return nodes[node->key];
+    //     }
+        
+    // }
+
+    void list_nodes() {
+        for (auto n : nodes) {
+            errs() << n.first.filename << "@" << n.first.linenum << ":" << n.first.colnum << "\n";
+        }
+    }
+
+    void print_dd_edge(std::string filename, uint32_t linenum, uint32_t colnum) {
+        MyNodeKey key;
+        key.filename = filename;
+        key.linenum = linenum;
+        key.colnum = colnum;
+
+        print_dd_edge(key);
+    }
+
+    void print_cd_edge(std::string filename, uint32_t linenum, uint32_t colnum) {
+        MyNodeKey key;
+        key.filename = filename;
+        key.linenum = linenum;
+        key.colnum = colnum;
+
+        print_cd_edge(key);
+    }
+
+    void print_dd_edge(MyNodeKey& key) {
+        if (!is_exist(key)) {
+            errs() << "Node not existed. \n";
+        }
+
+        auto n = is_exist(key);
+        errs() << n->key.filename << "@" << n->key.linenum << ":" << n->key.colnum << "\n";
+        errs() << "  Function: " << n->fun_name << "\n";
+        for (auto e : n->dd_edge) {
+            errs() << "  -> " << e->key.filename << "@" << e->key.linenum << ":" << e->key.colnum << "\n";
+        }
+        for (auto e : n->rev_dd_edge) {
+            errs() << "  <- " << e->key.filename << "@" << e->key.linenum << ":" << e->key.colnum << "\n";
+        }
+    }
+
+    void print_cd_edge(MyNodeKey& key) {
+        if (!is_exist(key)) {
+            errs() << "Node not existed. \n";
+        }
+
+        auto n = is_exist(key);
+        errs() << n->key.filename << "@" << n->key.linenum << ":" << n->key.colnum << "\n";
+        errs() << "  Function: " << n->fun_name << "\n";
+        for (auto e : n->cd_edge) {
+            errs() << "  -> " << e->key.filename << "@" << e->key.linenum << ":" << e->key.colnum << "\n";
+        }
+        for (auto e : n->rev_cd_edge) {
+            errs() << "  <- " << e->key.filename << "@" << e->key.linenum << ":" << e->key.colnum << "\n";
+        }
+    }
+
+    MyNode* add_node(MyNodeKey& key) {
+        if (!is_exist(key)) {
+            nodes[key] = new MyNode(key.filename, key.linenum, key.colnum);
+        }
+        return nodes[key];
+    }
+
+    MyNode* add_node(std::string filename, uint32_t linenum, uint32_t colnum, std::string funcname) {
+        MyNodeKey key;
+        key.filename = filename;
+        key.linenum = linenum;
+        key.colnum = colnum;
+
+        auto node = add_node(key);
+        node->fun_name = funcname;
+        return node;
+    }
+
+    int add_dd_edge(MyNode* source, MyNode* target) {
+
+        if (!source || !target) {
+            errs() << "Null node cannot be added.\n";
+            return -1;
+        }
+        
+        if (!is_exist(source) || !is_exist(target)) {
+            errs() << "node(s) are not found in PDG.\n";
+            return -1;
+        }
+        
+        if (nodes[source->key]->add_dd_successor(target)) {
+            errs() << "Add dd edge fail.\n";
+            return -1;
+        }
+        return 0;
+    }
+
+    int add_cd_edge(MyNode* source, MyNode* target) {
+        if (!source || !target) {
+            errs() << "Null node cannot be added.\n";
+            return -1;
+        }
+        
+        if (!is_exist(source) || !is_exist(target)) {
+            errs() << "node(s) are not found in PDG.\n";
+            return -1;
+        }
+        
+        if (nodes[source->key]->add_cd_successor(target)) {
+            errs() << "Add cd edge fail.\n";
+            return -1;
+        }
+        return 0;
+    }
+
+    MyNode* is_exist(MyNode* node) {
+        auto res = nodes.find(node->key);
+        if (res == nodes.end())
+            return nullptr;
+        else
+            return (*res).second;
+    }
+
+    MyNode* is_exist(MyNodeKey& key) {
+        auto res = nodes.find(key);
+        if (res == nodes.end())
+            return nullptr;
+        else
+            return (*res).second;
+    }
+
+    std::map<std::string, std::set<unsigned>> sliceWalk(const MyNodeKey &key, int depth, int interproc_depth) {
+        std::map<std::string, std::set<unsigned>> slice;
+
+        if (nodes.find(key) != nodes.end()) {
+            MyNode* crit_node = nodes[key];
+            std::set<MyNode*> visited;
+            sliceWalkDFS(crit_node, 0, 0, &depth, &interproc_depth, &slice, &visited);
+            return slice;
+        } else {
+            errs() << "[Warning]: \t criteria node not found.\n";
+            return slice;
+        }
+    }
+
+};
+
+MySrcPDG mypdg;
 
 
 std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &context,
@@ -103,188 +365,325 @@ std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &context,
 #endif
 
     if (!M) {
-        SMD.print("llvm-slicer", llvm::errs());
+        SMD.print("my-src-slicer", llvm::errs());
     }
 
     return M;
 }
 
-// class MyPDG {
-// public:
-//     typedef std::pair<llvm::Value *, llvm::Value *> MyEdge;
-//     std::set<LLVMNode *> nodes;
-    
-//     std::set<MyEdge> cd_edges;
-//     std::set<MyEdge> dd_edges;
-//     std::set<MyEdge> id_edges;
-//     std::set<MyEdge> use_edges;
-//     std::set<MyEdge> user_edges;
 
-
-
-// };
-
-enum EdgeFlag {
-    CD_EDGE,
-    DD_EDGE,
-    ID_EDGE,
-    USE_EDGE,
-    USER_EDGE
-};
-
-// max_depth = 1 means only add criteria node. Make sure max_depth is at least 2
-void walkDFS(LLVMNode * node, std::map<llvm::Value *, LLVMNode *> &node_in_slice, EdgeFlag edgeflag, int max_depth, int depth = 1) {
-
-    if (depth > max_depth)
-        return;
-
-    if (node_in_slice.find(node->getKey()) != node_in_slice.end())
-        return;
-
-    if (edgeflag == CD_EDGE) {
-        for (auto eit = node->control_begin(); eit != node->control_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
-
-        for (auto eit = node->rev_control_begin(); eit != node->rev_control_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
+static std::string getFileName(const llvm::Value* val) {
+    if (auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
+        return I->getParent()->getParent()->getSubprogram()->getFile()->getFilename();
     }
-
-    if (edgeflag == DD_EDGE) {
-        for (auto eit = node->data_begin(); eit != node->data_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
-
-        for (auto eit = node->rev_data_begin(); eit != node->rev_data_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
-    }
-
-    if (edgeflag == ID_EDGE) {
-        for (auto eit = node->interference_begin(); eit != node->interference_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
-
-        for (auto eit = node->rev_interference_begin(); eit != node->rev_interference_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
-    }
-
-    if (edgeflag == USE_EDGE) {
-        for (auto eit = node->use_begin(); eit != node->use_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
-    }
-
-    if (edgeflag == USER_EDGE) {
-        for (auto eit = node->user_begin(); eit != node->user_end(); eit++) {
-            dg::LLVMNode * n = *eit;
-            node_in_slice[n->getKey()] = *eit;
-            walkDFS(*eit, node_in_slice, edgeflag, max_depth, depth + 1);
-        }
-    }
-
-    if (node->subgraphsNum() > 0) { // this is a call site
-        dg::LLVMDGParameters * para = node->getParameters();
-        if (!para)
-            return;
-
-        // //TODO: iterate through para
-        // for (auto p = para->begin(); p != para->end();)
-    }
-       
+    return "NULL";
 }
 
-// void update_mypdg(LLVMDependenceGraph &dg, MyPDG &mypdg) {
-//     std::vector<llvm::Value *> candidate_nodes;
-
-//     for (auto &G : dg.getModule()->globals()) {
-//         candidate_nodes.push_back(&G);
-//     }
-
-
-// }
-
-
-std::ostream &printLLVMVal(std::ostream &os,
-                                         const llvm::Value *val) {
-    if (!val) {
-        os << "(null)";
-        return os;
+static std::string getFuncName(const llvm::Value* val) {
+    if (auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
+        return I->getParent()->getParent()->getName();
     }
+    return "NULL";
+}
 
-    std::ostringstream ostr;
-    llvm::raw_os_ostream ro(ostr);
 
-    if (llvm::isa<llvm::Function>(val)) {
-        ro << "FUNC " << val->getName();
-    } else if (auto B = llvm::dyn_cast<llvm::BasicBlock>(val)) {
-        ro << B->getParent()->getName() << "::\n";
-        ro << "label " << val->getName();
-    } else if (auto I = llvm::dyn_cast<llvm::Instruction>(val)) {
-        const auto B = I->getParent();
-        if (B) {
-            ro << B->getParent()->getName() << "::\n";
+static int getLineCol(const llvm::Value *val, uint32_t& line, uint32_t& col) {
+    if (auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
+        auto &DL = I->getDebugLoc();
+        if (DL) {
+            line = DL.getLine();
+            col = DL.getCol();
+            return 0;
         } else {
-            ro << "<null>::\n";
+            auto Vit = valuesToVars.find(I);
+            if (Vit != valuesToVars.end()) {
+                auto &decl = Vit->second;
+                line = decl.line;
+                col = decl.col;
+                return 0;
+            } else {
+                return -1;
+            }
         }
-        ro << *val;
-    } else {
-        ro << *val;
     }
+    return -1;
+}
 
-    ro.flush();
 
-    // break the string if it is too long
-    std::string str = ostr.str();
-    if (str.length() > 100) {
-        str.resize(40);
+static void process_DDA(LLVMDataDependenceAnalysis* DDA) {
+    for (auto *subg : DDA->getGraph()->subgraphs()) {
+        for (auto *bb : subg->bblocks()) {
+            for (auto *node : bb->getNodes()) {
+                if (node) {
+                    auto *val = DDA->getValue(node);
+                    if (!val) {
+                        continue;
+                    }
+
+                    // Node Info
+                    std::string filename = getFileName(val);
+                    std::string funcname = getFuncName(val);
+                    if (filename == "NULL" || funcname == "NULL") {
+                        continue;
+                    }
+
+                    uint32_t line;
+                    uint32_t col;
+                    if (getLineCol(val, line, col)) { // Cannot find corresponding source code line.
+                        continue; 
+                    }
+                    // errs() << filename << "@" << line << ":" << col << "\n"; //HW: Debug
+                    MyNode* mynode = mypdg.add_node(filename, line, col, funcname);
+                    
+                    // Edge Info
+                    if (node->isUse() && !node->isPhi()) {
+                        for (dg::dda::RWNode *def : DDA->getDefinitions(node)) {
+                            auto *def_val = DDA->getValue(def);
+                            if (!def_val)
+                                continue;
+
+                            filename = getFileName(def_val);
+                            if (getLineCol(def_val, line, col)) { // Cannot find corresponding source code line.
+                                continue; 
+                            }
+
+                            MyNode* defnode = mypdg.add_node(filename, line, col, funcname);
+                            defnode->add_dd_successor(mynode);
+                        }
+                    }
+                }
+
+                
+            }
+        }
     }
+}
 
-    // escape the "
+
+static void process_CDA(LLVMControlDependenceAnalysis *CDA) {
+    const auto *m = CDA->getModule();
+
+    for (auto &F : *m) {
+        for (auto &B : F) {
+            for (auto &I : B) {
+
+                std::string filename = getFileName(&I);
+                std::string funcname = getFuncName(&I);
+                if (filename == "NULL" || funcname == "NULL") {
+                    continue;
+                }
+
+                uint32_t line;
+                uint32_t col;
+                if (getLineCol(&I, line, col)) { // Cannot find corresponding source code line.
+                    continue; 
+                }
+                // errs() << filename << "@" << line << ":" << col << "\n"; //HW: Debug
+                MyNode* start_node = mypdg.add_node(filename, line, col, funcname);
+
+
+                for (auto *dep : CDA->getDependencies(&B)) {
+                    auto *depB = llvm::cast<llvm::BasicBlock>(dep);
+                    auto endB = depB->getTerminator();
+                    
+                    filename = getFileName(endB);
+                    funcname = getFuncName(endB);
+                    if (filename == "NULL" || funcname == "NULL") {
+                        continue;
+                    }
+
+                    if (getLineCol(endB, line, col)) { // Cannot find corresponding source code line.
+                        continue; 
+                    }
+
+                    MyNode* endB_node = mypdg.add_node(filename, line, col, funcname);
+                    start_node->add_cd_successor(endB_node);
+                }
+
+                for (auto *end : CDA->getDependencies(&I)) {
+
+                    filename = getFileName(end);
+                    funcname = getFuncName(end);
+                    if (filename == "NULL" || funcname == "NULL") {
+                        continue;
+                    }
+
+                    if (getLineCol(end, line, col)) { // Cannot find corresponding source code line.
+                        continue; 
+                    }
+
+                    MyNode* end_node = mypdg.add_node(filename, line, col, funcname);
+                    start_node->add_cd_successor(end_node);
+                }
+            }
+        }
+    }
+}
+
+
+int parse_mycriteria(std::string crit, std::string *file, uint32_t *line, uint32_t *col) {
     size_t pos = 0;
-    while ((pos = str.find('"', pos)) != std::string::npos) {
-        str.replace(pos, 1, "\\\"");
-        // we replaced one char with two, so we must shift after the new "
-        pos += 2;
+    std::string token;
+    std::vector<std::string> buffer;
+
+    while ((pos = crit.find("#")) != std::string::npos) {
+        token = crit.substr(0, pos);
+        buffer.push_back(token);
+        crit.erase(0, pos + 1);
+    }
+    buffer.push_back(crit);
+
+    if (buffer.size() != 3) {
+        errs() << "[Error]: \t invalid mycriteria\n";
+        return -1;
     }
 
-    os << str;
+    *file = buffer[0];
+    *line = std::stoi(buffer[1]);
+    *col = std::stoi(buffer[2]);
+    return 0;
+}
 
-    return os;
+
+// lines with matching braces per file
+typedef std::vector<std::pair<unsigned, unsigned>> MatchingBracesVector;
+std::map<std::string, MatchingBracesVector> matching_braces_per_file;
+// mapping line->index in matching_braces
+std::map<std::string, std::map<unsigned, unsigned>> nesting_structure_per_file;
+
+static bool get_nesting_structure(const char *source) {
+    std::ifstream ifs(source);
+    if (!ifs.is_open() || ifs.bad()) {
+        errs() << "Failed opening given source file: " << source << "\n";
+        return false;
+        //abort();
+    }
+
+    std::map<unsigned, unsigned> nesting_structure;
+    MatchingBracesVector matching_braces;
+
+    char ch;
+    unsigned cur_line = 1;
+    unsigned idx;
+    std::stack<unsigned> nesting;
+
+    uint8_t src_flag = 0;
+    enum SRCSTATE{
+        C_COMMENT = 1 << 0,
+        CPP_COMMENT = 1 << 1,
+        IN_CHAR = 1 << 2,
+        IN_STRING= 1 << 3
+    };
+
+    while (ifs.get(ch)) {
+
+        if (ch == '\n')
+            ++cur_line;
+
+        /* Check special cases and Update flags */
+        if ((src_flag & CPP_COMMENT)){
+            if (ch != '\n'){ // end of cpp comments
+                continue;
+            } else {
+                src_flag &= ~CPP_COMMENT;
+            }
+        }
+
+        if ((src_flag & C_COMMENT)){
+            if (ch == '*' && ifs.peek() == '/') { // end of c comments
+                src_flag &= ~C_COMMENT;
+                ifs.get();
+            } else {
+                continue;
+            }
+        }
+
+        if (!(src_flag & (CPP_COMMENT | C_COMMENT)) && ch == '/'){ // Beginning of comments
+            if (ifs.peek() == '/'){
+                src_flag |= CPP_COMMENT;
+                ifs.get();
+                continue;
+            }
+            else if (ifs.peek() == '*'){
+                src_flag |= C_COMMENT;
+                ifs.get();
+                continue;
+            }
+        }
+
+        if (ch == '\\' && src_flag & (IN_CHAR | IN_STRING)) { // escapes in char and string
+            ifs.get();
+            continue;
+        }
+
+        if (ch == '\'' && !(src_flag & IN_STRING)) {
+            src_flag ^= IN_CHAR;
+        }
+
+        if (ch == '"' && !(src_flag & IN_CHAR)) {
+            src_flag ^= IN_STRING;
+        }
+
+        if (src_flag & (IN_CHAR | IN_STRING))
+            continue;
+
+        switch (ch) {
+        case '\n':
+            if (!nesting.empty())
+                nesting_structure.emplace(cur_line, nesting.top());
+            break;
+        case '{':
+            nesting.push(matching_braces.size());
+            matching_braces.push_back({cur_line, 0});
+            break;
+        case '}':
+            idx = nesting.top();
+            assert(idx < matching_braces.size());
+            assert(matching_braces[idx].second == 0);
+            matching_braces[idx].second = cur_line;
+            nesting.pop();
+            break;
+        default:
+            break;
+        }
+    }
+
+    nesting_structure_per_file[source] = std::move(nesting_structure);
+    matching_braces_per_file[source] = std::move(matching_braces);
+
+    ifs.close();
+    return true;
+}
+
+
+static void print_lines(std::ifstream &ifs, std::set<unsigned> &lines) {
+    char buf[1024];
+    unsigned cur_line = 1;
+    while (!ifs.eof()) {
+        ifs.getline(buf, sizeof buf);
+
+        if (lines.count(cur_line) > 0) {
+            // std::cout << cur_line << ": ";
+            std::cout << buf << "\n";
+        }
+
+        if (ifs.bad()) {
+            errs() << "An error occured\n";
+            break;
+        }
+
+        ++cur_line;
+    }
 }
 
 
 int main(int argc, char *argv[]) {
-    setupStackTraceOnError(argc, argv);
+    SlicerOptions options = parseSlicerOptions(argc, argv);
 
-#if ((LLVM_VERSION_MAJOR >= 6))
-    llvm::cl::SetVersionPrinter(
-            [](llvm::raw_ostream &) { printf("%s\n", GIT_VERSION); });
-#else
-    llvm::cl::SetVersionPrinter([]() { printf("%s\n", GIT_VERSION); });
-#endif
-
-    SlicerOptions options =
-            parseSlicerOptions(argc, argv, true /* require crit*/);
-
-    if (enable_debug) {
-        DBG_ENABLE();
+    if (my_criteria.empty()) {
+        errs() << "[Error]:\t Criteria has to be provided.\n";
+        errs() << "\tUse: <filename>#<line>\n";
+        return 1;
     }
 
     llvm::LLVMContext context;
@@ -300,180 +699,107 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // remove unused from module, we don't need that
-    ModuleWriter writer(options, M.get());
-    writer.removeUnusedFromModule();
+    debug::TimeMeasure tm;
 
-    /// ---------------
-    // slice the code
-    /// ---------------
+    DGLLVMPointerAnalysis PTA(M.get(), options.dgOptions.PTAOptions);
+    tm.start();
+    PTA.run();
 
-    ::Slicer slicer(M.get(), options);
-    if (!slicer.buildDG(true)) {
-        errs() << "ERROR: Failed building DG\n";
+    tm.stop();
+    tm.report("INFO: Pointer analysis took");
+
+    
+    LLVMDataDependenceAnalysis DDA(M.get(), &PTA, options.dgOptions.DDAOptions);
+    tm.start();
+
+    DDA.run();
+    
+    tm.stop();
+    tm.report("INFO: Data dependence analysis took");
+
+    
+    LLVMControlDependenceAnalysis CDA(M.get(), options.dgOptions.CDAOptions);
+    tm.start();
+
+    CDA.compute();
+    
+    tm.stop();
+    tm.report("INFO: Control dependence analysis took");
+
+    
+
+#if (LLVM_VERSION_MAJOR == 3 && LLVM_VERSION_MINOR < 7)
+    llvm::errs() << "WARNING: Variables names matching is not supported "
+                    "for LLVM older than 3.7\n";
+#else
+    valuesToVars = allocasToVars(*M);
+#endif // LLVM > 3.6
+    if (valuesToVars.empty()) {
+        llvm::errs() << "WARNING: No debugging information found, "
+                        << "the C lines output will be corrupted\n";
+    }
+
+    process_DDA(&DDA);
+    process_CDA(&CDA);
+
+    MyNodeKey crit_key;
+
+    if (parse_mycriteria(my_criteria, &crit_key.filename, &crit_key.linenum, &crit_key.colnum)) {
         return 1;
     }
 
-    std::set<LLVMNode *> criteria_nodes;
-    if (!getSlicingCriteriaNodes(slicer.getDG(), options.slicingCriteria,
-                                 options.legacySlicingCriteria,
-                                 options.legacySecondarySlicingCriteria,
-                                 criteria_nodes, criteria_are_next_instr)) {
-        llvm::errs() << "ERROR: Failed finding slicing criteria: '"
-                     << options.slicingCriteria << "'\n";
+    // mypdg.list_nodes();
+    // mypdg.print_dd_edge("commands.c", 767, 28);
+    // mypdg.print_cd_edge("commands.c", 1248, 29);
 
-        return 1;
-    }
+    auto line_dict = mypdg.sliceWalk(crit_key, 500, 2);
 
-    if (criteria_nodes.empty()) {
-        llvm::errs() << "No reachable slicing criteria: '"
-                     << options.slicingCriteria << "'\n";
-        return 1;
-    }
-
-    // We do slice in our way
-    std::map<llvm::Value *, LLVMNode *> sliced_nodes;
-    int max_depth = 50;
-
-    auto & funcs = getConstructedFunctions();
-    dg::ADT::QueueFIFO<BBlock<LLVMNode> *> bbqueue;
-
-    // for (auto nit : criteria_nodes) {
-    //     for (auto it : funcs) {
-    //         auto nodes = it.second->getNodes();
-    //         for (auto n : *nodes) {
-    //             bbqueue.push(n.second->getBBlock());
-
-    //             while (!bbqueue.empty()) {
-    //                 auto bb = bbqueue.pop();
-    //                 if (bb->getCallSitesNum() > 0) {
-    //                     for (auto cit : n.second->getBBlock()->getCallSites()) {
-    //                         for (auto subdg : cit->getSubgraphs()) {
-    //                             // llvm::errs() << "---------------------------------------" << "\n";
-    //                             if (subdg->getEntryBB() == nit->getBBlock()) {
-    //                                 llvm::errs() << "##############################################3" << "\n";
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-                    
-    //                 for (auto E : bb->successors()) {
-    //                     bbqueue.push(E.target);
-    //                 }
-    //             }
-                
-                
-    //             // llvm::errs() << n.second->getBBlock()->getCallSitesNum() << "\n";
-    //         }
+    // for (auto lit : line_dict) {
+    //     for (auto l : lit.second) {
+    //         errs() << lit.first << ":" << l << "\n";
     //     }
-    // }
-
-    // for (auto n : criteria_nodes) {
         
-    //         bbqueue.push(n->getBBlock());
-
-    //         while (!bbqueue.empty()) {
-    //             auto bb = bbqueue.pop();
-    //             if (bb->getCallSitesNum() > 0) {
-    //                 for (auto cit : n->getBBlock()->getCallSites()) {
-    //                     for (auto subdg : cit->getSubgraphs()) {
-    //                         llvm::errs() << "---------------------------------------" << "\n";
-    //                         if (subdg->getEntryBB() == n->getBBlock()) {
-    //                             llvm::errs() << "##############################################3" << "\n";
-    //                         }
-    //                     }
-    //                 }
-    //             }
-                
-    //             for (auto E : bb->successors()) {
-    //                 bbqueue.push(E.target);
-    //             }
-    //         }
-            
-            
-            // llvm::errs() << n.second->getBBlock()->getCallSitesNum() << "\n";
-    // }
-    
-    
-    
-    for (auto nit : criteria_nodes) {
-        std::cerr << nit->getKey() << ": ";
-        printLLVMVal(std::cerr, nit ->getKey()); std::cerr << "\n";
-
-        
-        walkDFS(nit, sliced_nodes, CD_EDGE, max_depth);
-        walkDFS(nit, sliced_nodes, DD_EDGE, max_depth);
-        walkDFS(nit, sliced_nodes, ID_EDGE, max_depth);
-        walkDFS(nit, sliced_nodes, USE_EDGE, max_depth);
-        walkDFS(nit, sliced_nodes, USER_EDGE, max_depth);
-    }
-
-    for (auto nit : sliced_nodes) {
-        llvm::errs() << nit.second->getBBlock()-> getCallSitesNum() << "\n";
-    }
-
-    for (auto nit : sliced_nodes) {
-        std::cerr << nit.second->getKey() << ": ";
-        printLLVMVal(std::cerr, nit.second->getKey());
-        std::cerr << "\n";
-    }
-    
-
-   
-
-    // writer.removeUnusedFromModule();
-    // writer.makeDeclarationsExternal();
-
-    // get_lines_from_module(M.get());
-
-    // for (auto &fit : line_dict){
-    //     if (!get_nesting_structure(fit.first.c_str()))
-    //         continue;
-    //     /* fill in the lines with braces */
-    //     /* really not efficient, but easy */
-    //     auto &nesting_structure = nesting_structure_per_file[fit.first];
-    //     auto &matching_braces = matching_braces_per_file[fit.first];
-
-    //     size_t old_size;
-    //     do {
-    //         old_size = fit.second.size();
-    //         std::set<unsigned> new_lines;
-
-    //         for (unsigned i : fit.second) {
-    //             new_lines.insert(i);
-    //             auto it = nesting_structure.find(i);
-    //             if (it != nesting_structure.end()) {
-    //                 auto &pr = matching_braces[it->second];
-    //                 new_lines.insert(pr.first);
-    //                 new_lines.insert(pr.second);
-    //             }
-    //         }
-
-    //         fit.second.swap(new_lines);
-    //     } while (fit.second.size() > old_size);
     // }
 
-    // // Print lines
-    // if (!print_line_num){
-    //     for (auto &fit : line_dict){
-    //         // std::cout<< "FILE: " <<fit.first<<std::endl;
-    //         std::ifstream ifs(fit.first.c_str());
-    //         if (!ifs.is_open() || ifs.bad()) {
-    //             errs() << "Failed opening given source file: " << fit.first << "\n";
-    //             return -1;
-    //         }
+    for (auto &fit : line_dict){
+        if (!get_nesting_structure(fit.first.c_str()))
+            continue;
+        /* fill in the lines with braces */
+        /* really not efficient, but easy */
+        auto &nesting_structure = nesting_structure_per_file[fit.first];
+        auto &matching_braces = matching_braces_per_file[fit.first];
 
-    //         print_lines(ifs, fit.second);
-    //         ifs.close();
-    //     }
-    // } else {
-    //     for (auto &fit : line_dict){
-    //         std::cout << fit.first;
-    //         for (auto l : fit.second) {
-    //             std::cout << ',' << l;
-    //         }
-    //         std::cout << std::endl;
-    //     }
-    // }
-    
+        size_t old_size;
+        do {
+            old_size = fit.second.size();
+            std::set<unsigned> new_lines;
+
+            for (unsigned i : fit.second) {
+                new_lines.insert(i);
+                auto it = nesting_structure.find(i);
+                if (it != nesting_structure.end()) {
+                    auto &pr = matching_braces[it->second];
+                    new_lines.insert(pr.first);
+                    new_lines.insert(pr.second);
+                }
+            }
+
+            fit.second.swap(new_lines);
+        } while (fit.second.size() > old_size);
+    }
+
+
+    for (auto &fit : line_dict){
+        // std::cout<< "FILE: " <<fit.first<<std::endl;
+        std::ifstream ifs(fit.first.c_str());
+        if (!ifs.is_open() || ifs.bad()) {
+            errs() << "Failed opening given source file: " << fit.first << "\n";
+            return -1;
+        }
+
+        print_lines(ifs, fit.second);
+        ifs.close();
+    }
+
+    return 0;
 }

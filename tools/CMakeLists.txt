@@ -80,15 +80,6 @@ if (LLVM_DG)
 						PRIVATE ${llvm_core}
 						)
 
-	add_executable(my-src-slicer my-src-slicer.cpp)
-	target_link_libraries(my-src-slicer PRIVATE dgllvmslicer
-						PRIVATE dgllvmpta
-						PRIVATE ${llvm_support}
-						PRIVATE ${llvm_analysis}
-						PRIVATE ${llvm_irreader}
-						PRIVATE ${llvm_core}
-						)
-
 if (HAVE_SVF)
 	target_link_libraries(llvm-cg-dump
                                            PRIVATE ${SVF_LIBS}
@@ -178,6 +169,21 @@ endif (HAVE_SVF)
 				PRIVATE ${llvm_irreader}
 				PRIVATE ${llvm_analysis}
 				PRIVATE ${llvm_support})
+
+
+	add_executable(my-src-slicer my-src-slicer.cpp llvm-slicer-metadata.cpp)
+	target_link_libraries(my-src-slicer PRIVATE dgllvmdda
+										PRIVATE dganalysis
+										PRIVATE dgllvmcda)
+
+	target_link_libraries(my-src-slicer PRIVATE dgllvmslicer
+						PRIVATE dgllvmpta
+						PRIVATE ${llvm_support}
+						PRIVATE ${llvm_analysis}
+						PRIVATE ${llvm_irreader}
+						PRIVATE ${llvm_core}
+						)
+	
 
 	add_executable(llvm-vr-dump llvm-vr-dump.cpp)
 	target_link_libraries(llvm-vr-dump
