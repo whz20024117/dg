@@ -43,8 +43,17 @@ using namespace dg;
 using llvm::errs;
 
 llvm::cl::opt<std::string> my_criteria("mysc", 
-    llvm::cl::desc("My slicing criteria at source-level. Use: <filename>#<line>")
+    llvm::cl::desc("My slicing criteria at source-level. Use: -mysc <filename>#<line>#<col>")
 );
+llvm::cl::opt<std::string> walk_depth("wd", 
+    llvm::cl::desc("Max depths of walks on the graph"),
+    llvm::cl::init("15")
+);
+llvm::cl::opt<std::string> walk_depth_interproc("wdi", 
+    llvm::cl::desc("Max depths of interprocedule walks on the graph"),
+    llvm::cl::init("1")
+);
+
 
 using VariablesMapTy = std::map<const llvm::Value *, CVariableDecl>;
 VariablesMapTy allocasToVars(const llvm::Module &M);
@@ -186,25 +195,6 @@ class MySrcPDG {
     }
 
 public:
-    // MyNode* add_node(MyNode* node) {
-    //     if (!node) {
-    //         errs() << "Null node cannot be added.\n";
-    //         return nullptr;
-    //     }
-
-    //     if (!node->has_no_edges()) {
-    //         errs() << "Warning: added nodes contain edges. These edges will be ignored.\n";
-    //     }
-
-    //     if (!is_exist(node)) {
-    //         nodes[node->key] == node;
-    //         return node;
-    //     } else {
-    //         delete node;
-    //         return nodes[node->key];
-    //     }
-        
-    // }
 
     void list_nodes() {
         for (auto n : nodes) {
@@ -682,7 +672,7 @@ int main(int argc, char *argv[]) {
 
     if (my_criteria.empty()) {
         errs() << "[Error]:\t Criteria has to be provided.\n";
-        errs() << "\tUse: <filename>#<line>\n";
+        errs() << "\tUse: <filename>#<line>#<column>\n";
         return 1;
     }
 
@@ -740,7 +730,7 @@ int main(int argc, char *argv[]) {
     }
 
     process_DDA(&DDA);
-    process_CDA(&CDA);
+    // process_CDA(&CDA);
 
     MyNodeKey crit_key;
 
@@ -751,8 +741,10 @@ int main(int argc, char *argv[]) {
     // mypdg.list_nodes();
     // mypdg.print_dd_edge("commands.c", 767, 28);
     // mypdg.print_cd_edge("commands.c", 1248, 29);
+    int wd = std::stoi(walk_depth);
+    int wdi = std::stoi(walk_depth_interproc);
 
-    auto line_dict = mypdg.sliceWalk(crit_key, 500, 2);
+    auto line_dict = mypdg.sliceWalk(crit_key, wd, wdi);
 
     // for (auto lit : line_dict) {
     //     for (auto l : lit.second) {
