@@ -53,11 +53,17 @@ llvm::cl::opt<std::string> walk_depth_interproc("wdi",
     llvm::cl::desc("Max depths of interprocedule walks on the graph"),
     llvm::cl::init("1")
 );
+llvm::cl::opt<bool> mydbg("mydbg", 
+    llvm::cl::desc("Debug mode"),
+    llvm::cl::init(false)
+);
 
 
 using VariablesMapTy = std::map<const llvm::Value *, CVariableDecl>;
 VariablesMapTy allocasToVars(const llvm::Module &M);
 VariablesMapTy valuesToVars;
+
+std::unordered_map<std::string, uint32_t> functionDeclLine;
 
 class MyNode;
 using MyEdgeT = std::set<MyNode *>;
@@ -155,6 +161,10 @@ class MySrcPDG {
 
         // Add line to final slice
         (*ret)[node->key.filename].insert(node->key.linenum);
+
+        // Add function declaration line to the slice
+        (*ret)[node->key.filename].insert(functionDeclLine[node->fun_name]);
+
 
         visited->insert(node);
         
@@ -364,7 +374,10 @@ std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &context,
 
 static std::string getFileName(const llvm::Value* val) {
     if (auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
-        return I->getParent()->getParent()->getSubprogram()->getFile()->getFilename();
+        std::string ret;
+        ret = I->getParent()->getParent()->getSubprogram()->getFile()->getDirectory().str() + "/" + 
+            I->getParent()->getParent()->getSubprogram()->getFile()->getFilename().str();
+        return ret;
     }
     return "NULL";
 }
@@ -374,6 +387,13 @@ static std::string getFuncName(const llvm::Value* val) {
         return I->getParent()->getParent()->getName();
     }
     return "NULL";
+}
+
+static uint32_t getFuncLine(const llvm::Value* val) {
+    if (auto *I = llvm::dyn_cast<llvm::Instruction>(val)) {
+        return I->getParent()->getParent()->getSubprogram()->getLine();
+    }
+    return 0;
 }
 
 
@@ -422,6 +442,10 @@ static void process_DDA(LLVMDataDependenceAnalysis* DDA) {
                     if (getLineCol(val, line, col)) { // Cannot find corresponding source code line.
                         continue; 
                     }
+
+                    // Update function declaration line dict
+                    functionDeclLine[funcname] = getFuncLine(val);
+
                     // errs() << filename << "@" << line << ":" << col << "\n"; //HW: Debug
                     MyNode* mynode = mypdg.add_node(filename, line, col, funcname);
                     
@@ -486,6 +510,9 @@ static void process_CDA(LLVMControlDependenceAnalysis *CDA) {
                         continue; 
                     }
 
+                    // Update function declaration line dict
+                    functionDeclLine[funcname] = getFuncLine(endB);
+
                     MyNode* endB_node = mypdg.add_node(filename, line, col, funcname);
                     start_node->add_cd_successor(endB_node);
                 }
@@ -501,6 +528,9 @@ static void process_CDA(LLVMControlDependenceAnalysis *CDA) {
                     if (getLineCol(end, line, col)) { // Cannot find corresponding source code line.
                         continue; 
                     }
+
+                    // Update function declaration line dict
+                    functionDeclLine[funcname] = getFuncLine(end);
 
                     MyNode* end_node = mypdg.add_node(filename, line, col, funcname);
                     start_node->add_cd_successor(end_node);
@@ -658,7 +688,7 @@ static void print_lines(std::ifstream &ifs, std::set<unsigned> &lines) {
         }
 
         if (ifs.bad()) {
-            errs() << "An error occured\n";
+            errs() << "Error on reading source code file\n";
             break;
         }
 
@@ -699,15 +729,6 @@ int main(int argc, char *argv[]) {
     tm.report("INFO: Pointer analysis took");
 
     
-    LLVMDataDependenceAnalysis DDA(M.get(), &PTA, options.dgOptions.DDAOptions);
-    tm.start();
-
-    DDA.run();
-    
-    tm.stop();
-    tm.report("INFO: Data dependence analysis took");
-
-    
     LLVMControlDependenceAnalysis CDA(M.get(), options.dgOptions.CDAOptions);
     tm.start();
 
@@ -715,6 +736,15 @@ int main(int argc, char *argv[]) {
     
     tm.stop();
     tm.report("INFO: Control dependence analysis took");
+
+
+    LLVMDataDependenceAnalysis DDA(M.get(), &PTA, options.dgOptions.DDAOptions);
+    tm.start();
+
+    DDA.run();
+    
+    tm.stop();
+    tm.report("INFO: Data dependence analysis took");
 
     
 
@@ -732,6 +762,11 @@ int main(int argc, char *argv[]) {
     process_DDA(&DDA);
     // process_CDA(&CDA);
 
+    if (mydbg) {
+        mypdg.list_nodes();
+        return 0;
+    }
+
     MyNodeKey crit_key;
 
     if (parse_mycriteria(my_criteria, &crit_key.filename, &crit_key.linenum, &crit_key.colnum)) {
@@ -745,6 +780,9 @@ int main(int argc, char *argv[]) {
     int wdi = std::stoi(walk_depth_interproc);
 
     auto line_dict = mypdg.sliceWalk(crit_key, wd, wdi);
+    if (line_dict.empty()) {
+        return 1;
+    }
 
     // for (auto lit : line_dict) {
     //     for (auto l : lit.second) {
@@ -753,45 +791,55 @@ int main(int argc, char *argv[]) {
         
     // }
 
-    for (auto &fit : line_dict){
-        if (!get_nesting_structure(fit.first.c_str()))
-            continue;
-        /* fill in the lines with braces */
-        /* really not efficient, but easy */
-        auto &nesting_structure = nesting_structure_per_file[fit.first];
-        auto &matching_braces = matching_braces_per_file[fit.first];
+    if (1) {
+        for (auto &fit : line_dict){
+            if (!get_nesting_structure(fit.first.c_str()))
+                continue;
+            /* fill in the lines with braces */
+            /* really not efficient, but easy */
+            auto &nesting_structure = nesting_structure_per_file[fit.first];
+            auto &matching_braces = matching_braces_per_file[fit.first];
 
-        size_t old_size;
-        do {
-            old_size = fit.second.size();
-            std::set<unsigned> new_lines;
+            size_t old_size;
+            do {
+                old_size = fit.second.size();
+                std::set<unsigned> new_lines;
 
-            for (unsigned i : fit.second) {
-                new_lines.insert(i);
-                auto it = nesting_structure.find(i);
-                if (it != nesting_structure.end()) {
-                    auto &pr = matching_braces[it->second];
-                    new_lines.insert(pr.first);
-                    new_lines.insert(pr.second);
+                for (unsigned i : fit.second) {
+                    new_lines.insert(i);
+                    auto it = nesting_structure.find(i);
+                    if (it != nesting_structure.end()) {
+                        auto &pr = matching_braces[it->second];
+                        new_lines.insert(pr.first);
+                        new_lines.insert(pr.second);
+                    }
                 }
-            }
 
-            fit.second.swap(new_lines);
-        } while (fit.second.size() > old_size);
-    }
-
-
-    for (auto &fit : line_dict){
-        // std::cout<< "FILE: " <<fit.first<<std::endl;
-        std::ifstream ifs(fit.first.c_str());
-        if (!ifs.is_open() || ifs.bad()) {
-            errs() << "Failed opening given source file: " << fit.first << "\n";
-            return -1;
+                fit.second.swap(new_lines);
+            } while (fit.second.size() > old_size);
         }
 
-        print_lines(ifs, fit.second);
-        ifs.close();
+
+        for (auto &fit : line_dict){
+            // std::cout<< "FILE: " <<fit.first<<std::endl;
+            std::ifstream ifs(fit.first.c_str());
+            if (!ifs.is_open() || ifs.bad()) {
+                errs() << "Failed opening given source file: " << fit.first << "\n";
+                return -1;
+            }
+
+            print_lines(ifs, fit.second);
+            ifs.close();
+        }
+    } else {
+        for (auto &fit : line_dict) {
+            for (auto &it : fit.second) {
+                std::cout << fit.first << ":" << it << "\n";
+            }
+        }
     }
+    
+    
 
     return 0;
 }
